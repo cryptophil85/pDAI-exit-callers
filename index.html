@@ -40,6 +40,34 @@
         .page-info {
             margin-bottom: 0;
         }
+        .btn-outline-secondary {
+            padding: 0.25rem 0.5rem;
+            font-size: 0.75rem;
+            line-height: 1;
+            border-radius: 0.2rem;
+        }
+        .wallet-position {
+            display: inline-block;
+            width: 28px;
+            height: 28px;
+            line-height: 28px;
+            text-align: center;
+            background-color: #28a745;
+            color: white;
+            font-weight: bold;
+            border-radius: 4px;
+            margin-right: 8px;
+            font-size: 0.8rem;
+        }
+        .new-wallet-label {
+            display: inline-block;
+            background-color: #007bff;
+            color: white;
+            font-size: 0.75rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-left: 5px;
+        }
     </style>
 </head>
 <body>
@@ -73,6 +101,7 @@
                 <div class="card">
                     <div class="card-body">
                         <h5>Total DAI Exited: <span id="totalAmount">0</span></h5>
+                        <h5>Unique Wallets: <span id="uniqueWallets">0</span></h5>
                     </div>
                 </div>
             </div>
@@ -112,15 +141,22 @@
                 </div>
                 <p class="page-info">Showing <span id="startEntry">0</span> to <span id="endEntry">0</span> of <span id="totalEntries">0</span> entries</p>
                 <div>
+                    <button class="btn btn-sm btn-outline-primary" onclick="firstPage()" id="firstPageBtn" disabled>First</button>
                     <button class="btn btn-sm btn-outline-primary" onclick="prevPage()" id="prevPageBtn" disabled>Previous</button>
                     <button class="btn btn-sm btn-outline-primary" onclick="nextPage()" id="nextPageBtn" disabled>Next</button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="lastPage()" id="lastPageBtn" disabled>Last</button>
                 </div>
             </div>
             
             <table class="table table-striped">
                 <thead>
                     <tr>
-                        <th>Block</th>
+                        <th>
+                            Block
+                            <button class="btn btn-sm btn-outline-secondary" onclick="toggleBlockSort()" id="blockSortBtn">
+                                <span id="sortIcon">↓</span>
+                            </button>
+                        </th>
                         <th>Transaction</th>
                         <th>Caller</th>
                         <th>Amount (DAI)</th>
@@ -151,10 +187,14 @@
         let allData = [];
         let filteredData = [];
         let uniqueCallers = new Set();
+        let walletPositions = {}; // To store the position of each wallet
         
         // Pagination variables
         let currentPage = 1;
         let pageSize = 25;
+        
+        // Sorting variables
+        let blockSortAscending = true; // Default to oldest blocks first
         
         // Load and parse the CSV data
         window.onload = function() {
@@ -166,7 +206,13 @@
                         header: true,
                         complete: function(results) {
                             allData = results.data.filter(row => row.amountRaw); // Filter out empty rows
+                            
+                            // Sort by block number (ascending by default)
+                            allData.sort((a, b) => parseInt(a.block) - parseInt(b.block));
                             filteredData = [...allData];
+                            
+                            // Calculate wallet positions (order of first appearance)
+                            calculateWalletPositions(allData);
                             
                             // Populate unique callers
                             populateCallerDropdown(allData);
@@ -232,8 +278,10 @@
             document.getElementById('totalEntries').textContent = totalItems;
             
             // Enable/disable pagination buttons
+            document.getElementById('firstPageBtn').disabled = currentPage === 1;
             document.getElementById('prevPageBtn').disabled = currentPage === 1;
             document.getElementById('nextPageBtn').disabled = currentPage >= totalPages;
+            document.getElementById('lastPageBtn').disabled = currentPage >= totalPages;
             
             // Get current page data
             const currentPageData = data.slice(startIndex, endIndex);
@@ -253,9 +301,17 @@
                 txTd.innerHTML = `<div class="explorer-links">${createExplorerLinks(row.transaction)}</div>`;
                 tr.appendChild(txTd);
                 
-                // Caller address column with copy button
+                // Caller address column with position indicator and copy button
                 const callerTd = document.createElement('td');
                 callerTd.className = 'address-cell';
+                
+                // Add wallet position indicator
+                if (row.caller && walletPositions[row.caller]) {
+                    const positionSpan = document.createElement('span');
+                    positionSpan.className = 'wallet-position';
+                    positionSpan.textContent = walletPositions[row.caller];
+                    callerTd.appendChild(positionSpan);
+                }
                 
                 const addressSpan = document.createElement('span');
                 addressSpan.textContent = row.caller;
@@ -278,6 +334,20 @@
                 
                 callerTd.appendChild(addressSpan);
                 callerTd.appendChild(copyBtn);
+                
+                // Add "New (24hrs)" label for wallets identified in the last 8,640 blocks
+                if (row.caller && walletPositions[row.caller]) {
+                    const latestBlock = parseInt(allData[allData.length - 1].block);
+                    const firstAppearanceBlock = getFirstAppearanceBlock(row.caller);
+                    
+                    if (firstAppearanceBlock && (latestBlock - firstAppearanceBlock < 8640)) {
+                        const newLabel = document.createElement('span');
+                        newLabel.className = 'new-wallet-label';
+                        newLabel.textContent = 'New (24hrs)';
+                        callerTd.appendChild(newLabel);
+                    }
+                }
+                
                 tr.appendChild(callerTd);
                 
                 // Amount column formatted from WEI to ETH
@@ -290,9 +360,10 @@
             });
         }
         
-        // Calculate and update the total amount
+        // Calculate and update the total amount and unique wallets
         function updateTotal(data) {
             let total = ethers.BigNumber.from(0);
+            const uniqueAddresses = new Set();
             
             data.forEach(row => {
                 if (row.amountRaw) {
@@ -303,9 +374,14 @@
                         console.error("Error parsing amount:", row.amountRaw);
                     }
                 }
+                
+                if (row.caller) {
+                    uniqueAddresses.add(row.caller);
+                }
             });
             
             document.getElementById('totalAmount').textContent = formatAmount(total.toString());
+            document.getElementById('uniqueWallets').textContent = uniqueAddresses.size;
         }
         
         // Populate the caller dropdown
@@ -409,6 +485,13 @@
                 filteredData = [...allData];
             }
             
+            // Apply current sort order
+            filteredData.sort((a, b) => {
+                const blockA = parseInt(a.block);
+                const blockB = parseInt(b.block);
+                return blockSortAscending ? blockA - blockB : blockB - blockA;
+            });
+            
             currentPage = 1; // Reset to first page when filtering
             renderTable(filteredData);
             updateTotal(filteredData);
@@ -441,6 +524,13 @@
                 document.getElementById('addressFilter').value = '';
             }
             
+            // Apply current sort order
+            filteredData.sort((a, b) => {
+                const blockA = parseInt(a.block);
+                const blockB = parseInt(b.block);
+                return blockSortAscending ? blockA - blockB : blockB - blockA;
+            });
+            
             currentPage = 1; // Reset to first page when searching
             renderTable(filteredData);
             updateTotal(filteredData);
@@ -452,6 +542,14 @@
             document.getElementById('addressFilter').value = '';
             document.getElementById('addressSearch').value = '';
             filteredData = [...allData];
+            
+            // Apply current sort order
+            filteredData.sort((a, b) => {
+                const blockA = parseInt(a.block);
+                const blockB = parseInt(b.block);
+                return blockSortAscending ? blockA - blockB : blockB - blockA;
+            });
+            
             currentPage = 1; // Reset to first page when clearing filters
             renderTable(filteredData);
             updateTotal(filteredData);
@@ -520,6 +618,40 @@
                 return cumulativeTotal;
             });
             
+            // Calculate unique wallets per day
+            const uniqueWalletsPerDay = {};
+            const cumulativeUniqueWallets = {};
+            let allUniqueWallets = new Set();
+            
+            // First pass to get unique wallets per day
+            labels.forEach(label => {
+                uniqueWalletsPerDay[label] = new Set();
+            });
+            
+            sortedData.forEach(row => {
+                if (!row.block || !row.caller) return;
+                
+                const blockNum = parseInt(row.block);
+                const rawDayIndex = Math.floor(blockNum / BLOCKS_PER_DAY);
+                const normalizedDayIndex = rawDayIndex - minDayIndex + 1;
+                const dayLabel = `Day ${normalizedDayIndex}`;
+                
+                if (uniqueWalletsPerDay[dayLabel]) {
+                    uniqueWalletsPerDay[dayLabel].add(row.caller);
+                }
+            });
+            
+            // Second pass to calculate cumulative unique wallets
+            labels.forEach(label => {
+                const dayWallets = uniqueWalletsPerDay[label];
+                dayWallets.forEach(wallet => allUniqueWallets.add(wallet));
+                cumulativeUniqueWallets[label] = allUniqueWallets.size;
+            });
+            
+            // Convert to arrays for Chart.js
+            const uniqueWalletsData = labels.map(label => uniqueWalletsPerDay[label].size);
+            const cumulativeWalletsData = labels.map(label => cumulativeUniqueWallets[label]);
+            
             // Create the chart
             const ctx = document.getElementById('exitRateChart').getContext('2d');
             exitRateChart = new Chart(ctx, {
@@ -542,6 +674,15 @@
                             borderColor: 'rgba(255, 99, 132, 1)',
                             borderWidth: 1,
                             yAxisID: 'y1'
+                        },
+                        {
+                            label: 'Cumulative Unique Wallets',
+                            data: cumulativeWalletsData,
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            borderWidth: 1,
+                            yAxisID: 'y2',
+                            pointRadius: 3
                         }
                     ]
                 },
@@ -572,6 +713,19 @@
                             grid: {
                                 drawOnChartArea: false
                             }
+                        },
+                        y2: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            title: {
+                                display: true,
+                                text: 'Unique Wallets'
+                            },
+                            grid: {
+                                drawOnChartArea: false
+                            },
+                            min: 0
                         }
                     },
                     plugins: {
@@ -599,6 +753,17 @@
         }
         
         // Pagination functions
+        function firstPage() {
+            currentPage = 1;
+            renderTable(filteredData);
+        }
+        
+        function lastPage() {
+            const totalPages = Math.ceil(filteredData.length / pageSize);
+            currentPage = totalPages;
+            renderTable(filteredData);
+        }
+        
         function nextPage() {
             const totalPages = Math.ceil(filteredData.length / pageSize);
             if (currentPage < totalPages) {
@@ -617,6 +782,51 @@
         function changePageSize() {
             pageSize = parseInt(document.getElementById('pageSize').value);
             currentPage = 1; // Reset to first page when changing page size
+            renderTable(filteredData);
+        }
+        
+        // Calculate the position of each wallet based on first appearance
+        function calculateWalletPositions(data) {
+            walletPositions = {};
+            let position = 1;
+            
+            // Sort data by block number to ensure chronological order
+            const sortedData = [...data].sort((a, b) => parseInt(a.block) - parseInt(b.block));
+            
+            // Assign positions based on first appearance
+            sortedData.forEach(row => {
+                if (row.caller && !walletPositions[row.caller]) {
+                    walletPositions[row.caller] = position++;
+                }
+            });
+        }
+        
+        // Get the block number of the first appearance of a wallet
+        function getFirstAppearanceBlock(address) {
+            // Sort data by block number to ensure chronological order
+            const sortedData = [...allData].sort((a, b) => parseInt(a.block) - parseInt(b.block));
+            
+            // Find the first transaction for this address
+            const firstTx = sortedData.find(row => row.caller === address);
+            return firstTx ? parseInt(firstTx.block) : null;
+        }
+        
+        // Toggle block sorting (ascending/descending)
+        function toggleBlockSort() {
+            blockSortAscending = !blockSortAscending;
+            
+            // Update sort icon
+            document.getElementById('sortIcon').textContent = blockSortAscending ? '↓' : '↑';
+            
+            // Sort the data
+            filteredData.sort((a, b) => {
+                const blockA = parseInt(a.block);
+                const blockB = parseInt(b.block);
+                return blockSortAscending ? blockA - blockB : blockB - blockA;
+            });
+            
+            // Reset to first page and render
+            currentPage = 1;
             renderTable(filteredData);
         }
         
@@ -683,10 +893,45 @@
                 return cumulativeTotal;
             });
             
+            // Calculate unique wallets per day
+            const uniqueWalletsPerDay = {};
+            const cumulativeUniqueWallets = {};
+            let allUniqueWallets = new Set();
+            
+            // First pass to get unique wallets per day
+            labels.forEach(label => {
+                uniqueWalletsPerDay[label] = new Set();
+            });
+            
+            sortedData.forEach(row => {
+                if (!row.block || !row.caller) return;
+                
+                const blockNum = parseInt(row.block);
+                const rawDayIndex = Math.floor(blockNum / BLOCKS_PER_DAY);
+                const normalizedDayIndex = rawDayIndex - minDayIndex + 1;
+                const dayLabel = `Day ${normalizedDayIndex}`;
+                
+                if (uniqueWalletsPerDay[dayLabel]) {
+                    uniqueWalletsPerDay[dayLabel].add(row.caller);
+                }
+            });
+            
+            // Second pass to calculate cumulative unique wallets
+            labels.forEach(label => {
+                const dayWallets = uniqueWalletsPerDay[label];
+                dayWallets.forEach(wallet => allUniqueWallets.add(wallet));
+                cumulativeUniqueWallets[label] = allUniqueWallets.size;
+            });
+            
+            // Convert to arrays for Chart.js
+            const uniqueWalletsData = labels.map(label => uniqueWalletsPerDay[label].size);
+            const cumulativeWalletsData = labels.map(label => cumulativeUniqueWallets[label]);
+            
             // Update chart data
             exitRateChart.data.labels = labels;
             exitRateChart.data.datasets[0].data = amounts;
             exitRateChart.data.datasets[1].data = cumulativeAmounts;
+            exitRateChart.data.datasets[2].data = cumulativeWalletsData;
             exitRateChart.update();
         }
     </script>

@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PulseChain DAI Exit Tracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/papaparse@5.3.0/papaparse.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .container { max-width: 1200px; margin-top: 30px; }
+        .explorer-links a { margin-right: 10px; }
+        #totalAmount { font-weight: bold; font-size: 1.2em; }
+        .address-cell { word-break: break-all; position: relative; }
+        .amount-cell { text-align: right; }
+        .loading { text-align: center; padding: 20px; }
+        .copy-btn {
+            cursor: pointer;
+            margin-left: 5px;
+            padding: 2px 5px;
+            font-size: 0.8em;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 3px;
+        }
+        .copy-btn:hover {
+            background-color: #e9ecef;
+        }
+        .filter-section {
+            margin-bottom: 15px;
+        }
+        .pagination-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 20px;
+            margin-bottom: 20px;
+        }
+        .page-info {
+            margin-bottom: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>PulseChain DAI Exit Tracker</h1>
+        <p class="text-muted">Last Updated: Apr 15th 2025 5:34 AM (UTC) [block 23216363] - Page is static, manually updated</p>
+        <p>
+            <a href="https://x.com/cryptophil85" target="_blank">Nudge me on X</a> for updates.
+        </p>
+        
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="filter-section">
+                    <label for="addressFilter">Filter by caller:</label>
+                    <div class="input-group">
+                        <select id="addressFilter" class="form-select">
+                            <option value="">Select exit() caller (0 found)</option>
+                        </select>
+                        <button class="btn btn-secondary" onclick="clearFilter()">Show All</button>
+                    </div>
+                </div>
+                <div class="filter-section">
+                    <label for="addressSearch">Search address:</label>
+                    <div class="input-group">
+                        <input type="text" id="addressSearch" class="form-control" placeholder="Enter address to search...">
+                        <button class="btn btn-primary" onclick="searchAddress()">Search</button>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-body">
+                        <h5>Total DAI Exited: <span id="totalAmount">0</span></h5>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div id="loading" class="loading">
+            <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+            </div>
+            <p>Loading transaction data...</p>
+        </div>
+        
+        <div class="row mb-4" id="chartContainer" style="display: none;">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <h5>DAI Exit Rate Over Time</h5>
+                        <small class="text-muted">Days are based on 8,640 blocks (10 second blocks) and are estimates based on average block times. When filtering by address, Day 1 represents the first day that address called the exit function.</small>
+                    </div>
+                    <div class="card-body">
+                        <canvas id="exitRateChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="table-responsive" id="tableContainer" style="display: none;">
+            <div class="pagination-container">
+                <div>
+                    <label for="pageSize">Show entries: </label>
+                    <select id="pageSize" class="form-select form-select-sm d-inline-block w-auto" onchange="changePageSize()">
+                        <option value="10">10</option>
+                        <option value="25" selected>25</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
+                </div>
+                <p class="page-info">Showing <span id="startEntry">0</span> to <span id="endEntry">0</span> of <span id="totalEntries">0</span> entries</p>
+                <div>
+                    <button class="btn btn-sm btn-outline-primary" onclick="prevPage()" id="prevPageBtn" disabled>Previous</button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="nextPage()" id="nextPageBtn" disabled>Next</button>
+                </div>
+            </div>
+            
+            <table class="table table-striped">
+                <thead>
+                    <tr>
+                        <th>Block</th>
+                        <th>Transaction</th>
+                        <th>Caller</th>
+                        <th>Amount (DAI)</th>
+                    </tr>
+                </thead>
+                <tbody id="dataTable"></tbody>
+            </table>
+        </div>
+        
+        <footer class="mt-5 pt-4 border-top text-center">
+            <div class="row">
+                <div class="col-12">
+                    <p>This resource was created for free to help the community track DAI exits on PulseChain.</p>
+                    <p>
+                        <a href="https://x.com/cryptophil85" target="_blank">Follow me on X</a> for updates.
+                    </p>
+                    <p>
+                        If you want to buy me a coffee to say thanks, I'll accept any EVM chain ERC-20 tokens<br>
+                        (PulseChain, Ethereum, Sonic, etc) here: <span class="user-select-all">0x5070A415cDc55fbBE6CfA62cB84977c0FBea9894</span>
+                    </p>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <script>
+        // Store the parsed data
+        let allData = [];
+        let filteredData = [];
+        let uniqueCallers = new Set();
+        
+        // Pagination variables
+        let currentPage = 1;
+        let pageSize = 25;
+        
+        // Load and parse the CSV data
+        window.onload = function() {
+            // Load the CSV file
+            fetch('daiJoin_exit_details.csv')
+                .then(response => response.text())
+                .then(csvData => {
+                    Papa.parse(csvData, {
+                        header: true,
+                        complete: function(results) {
+                            allData = results.data.filter(row => row.amountRaw); // Filter out empty rows
+                            filteredData = [...allData];
+                            
+                            // Populate unique callers
+                            populateCallerDropdown(allData);
+                            
+                            renderTable(filteredData);
+                            updateTotal(filteredData);
+                            
+                            // Create chart
+                            createExitRateChart(allData);
+                            
+                            // Hide loading, show chart and table
+                            document.getElementById('loading').style.display = 'none';
+                            document.getElementById('chartContainer').style.display = 'block';
+                            document.getElementById('tableContainer').style.display = 'block';
+                        }
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading CSV file:', error);
+                    document.getElementById('loading').innerHTML = 
+                        '<div class="alert alert-danger">Error loading CSV data. Please check the console for details.</div>';
+                });
+        };
+        
+        // Format WEI to ETH/DAI (both use 18 decimals)
+        function formatAmount(amountWei) {
+            try {
+                // Using ethers.js to format the amount
+                const formatted = ethers.utils.formatUnits(amountWei, 18);
+                // Format with commas for thousands separators
+                return parseFloat(formatted).toLocaleString('en-US', {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 6
+                });
+            } catch (e) {
+                console.error("Error formatting amount:", amountWei, e);
+                return "Error";
+            }
+        }
+        
+        // Create explorer links
+        function createExplorerLinks(txHash) {
+            return `
+                <a href="https://otter.pulsechain.com/tx/${txHash}" target="_blank">Otterscan</a>
+                <a href="https://scan.mypinata.cloud/ipfs/bafybeih3olry3is4e4lzm7rus5l3h6zrphcal5a7ayfkhzm5oivjro2cp4/#/tx/${txHash}" target="_blank">BlockScout</a>
+            `;
+        }
+        
+        // Render the table with data
+        function renderTable(data) {
+            const tableBody = document.getElementById('dataTable');
+            tableBody.innerHTML = '';
+            
+            // Calculate pagination
+            const totalItems = data.length;
+            const totalPages = Math.ceil(totalItems / pageSize);
+            const startIndex = (currentPage - 1) * pageSize;
+            const endIndex = Math.min(startIndex + pageSize, totalItems);
+            
+            // Update pagination info
+            document.getElementById('startEntry').textContent = totalItems > 0 ? startIndex + 1 : 0;
+            document.getElementById('endEntry').textContent = endIndex;
+            document.getElementById('totalEntries').textContent = totalItems;
+            
+            // Enable/disable pagination buttons
+            document.getElementById('prevPageBtn').disabled = currentPage === 1;
+            document.getElementById('nextPageBtn').disabled = currentPage >= totalPages;
+            
+            // Get current page data
+            const currentPageData = data.slice(startIndex, endIndex);
+            
+            currentPageData.forEach(row => {
+                if (!row.amountRaw) return; // Skip rows with missing data
+                
+                const tr = document.createElement('tr');
+                
+                // Block column
+                const blockTd = document.createElement('td');
+                blockTd.textContent = row.block;
+                tr.appendChild(blockTd);
+                
+                // Transaction column with explorer links
+                const txTd = document.createElement('td');
+                txTd.innerHTML = `<div class="explorer-links">${createExplorerLinks(row.transaction)}</div>`;
+                tr.appendChild(txTd);
+                
+                // Caller address column with copy button
+                const callerTd = document.createElement('td');
+                callerTd.className = 'address-cell';
+                
+                const addressSpan = document.createElement('span');
+                addressSpan.textContent = row.caller;
+                
+                const copyBtn = document.createElement('button');
+                copyBtn.className = 'copy-btn';
+                copyBtn.textContent = 'Copy';
+                copyBtn.onclick = function() {
+                    navigator.clipboard.writeText(row.caller)
+                        .then(() => {
+                            copyBtn.textContent = 'Copied!';
+                            setTimeout(() => {
+                                copyBtn.textContent = 'Copy';
+                            }, 2000);
+                        })
+                        .catch(err => {
+                            console.error('Failed to copy: ', err);
+                        });
+                };
+                
+                callerTd.appendChild(addressSpan);
+                callerTd.appendChild(copyBtn);
+                tr.appendChild(callerTd);
+                
+                // Amount column formatted from WEI to ETH
+                const amountTd = document.createElement('td');
+                amountTd.textContent = formatAmount(row.amountRaw);
+                amountTd.className = 'amount-cell';
+                tr.appendChild(amountTd);
+                
+                tableBody.appendChild(tr);
+            });
+        }
+        
+        // Calculate and update the total amount
+        function updateTotal(data) {
+            let total = ethers.BigNumber.from(0);
+            
+            data.forEach(row => {
+                if (row.amountRaw) {
+                    try {
+                        const amount = ethers.BigNumber.from(row.amountRaw);
+                        total = total.add(amount);
+                    } catch (e) {
+                        console.error("Error parsing amount:", row.amountRaw);
+                    }
+                }
+            });
+            
+            document.getElementById('totalAmount').textContent = formatAmount(total.toString());
+        }
+        
+        // Populate the caller dropdown
+        function populateCallerDropdown(data) {
+            const dropdown = document.getElementById('addressFilter');
+            const uniqueCallers = new Set();
+            const callerTotals = {};
+            
+            // Get unique callers and calculate totals
+            data.forEach(row => {
+                if (row.caller && row.amountRaw) {
+                    uniqueCallers.add(row.caller);
+                    
+                    // Initialize or add to caller's total
+                    if (!callerTotals[row.caller]) {
+                        callerTotals[row.caller] = ethers.BigNumber.from(0);
+                    }
+                    
+                    try {
+                        const amount = ethers.BigNumber.from(row.amountRaw);
+                        callerTotals[row.caller] = callerTotals[row.caller].add(amount);
+                    } catch (e) {
+                        console.error("Error parsing amount for caller total:", row.amountRaw);
+                    }
+                }
+            });
+            
+            // Clear dropdown
+            dropdown.innerHTML = '';
+            
+            // Add default option
+            const defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = `Select exit() caller (${uniqueCallers.size} found)`;
+            dropdown.appendChild(defaultOption);
+            
+            // Add caller options
+            const callerArray = Array.from(uniqueCallers);
+            
+            // Sort by total amount (highest to lowest)
+            callerArray.sort((a, b) => {
+                const totalA = callerTotals[a] || ethers.BigNumber.from(0);
+                const totalB = callerTotals[b] || ethers.BigNumber.from(0);
+                
+                // Compare as BigNumber (reverse order for highest first)
+                if (totalA.gt(totalB)) return -1;
+                if (totalA.lt(totalB)) return 1;
+                return 0;
+            });
+            
+            callerArray.forEach(caller => {
+                const option = document.createElement('option');
+                option.value = caller;
+                
+                // Format the total amount
+                let formattedTotal = "";
+                if (callerTotals[caller]) {
+                    const totalInEther = parseFloat(ethers.utils.formatUnits(callerTotals[caller].toString(), 18));
+                    
+                    // Format with abbreviations (K, M, B)
+                    if (totalInEther >= 1e9) {
+                        formattedTotal = ` <strong>(${(totalInEther / 1e9).toFixed(2)}B)</strong>`;
+                    } else if (totalInEther >= 1e6) {
+                        formattedTotal = ` <strong>(${(totalInEther / 1e6).toFixed(2)}M)</strong>`;
+                    } else if (totalInEther >= 1e3) {
+                        formattedTotal = ` <strong>(${(totalInEther / 1e3).toFixed(2)}K)</strong>`;
+                    } else {
+                        formattedTotal = ` <strong>(${totalInEther.toFixed(2)})</strong>`;
+                    }
+                }
+                
+                option.innerHTML = `${caller}${formattedTotal}`;
+                dropdown.appendChild(option);
+            });
+            
+            // Add change event listener
+            dropdown.addEventListener('change', applyFilter);
+        
+            // Add event listener for Enter key on the search input
+            document.addEventListener('DOMContentLoaded', function() {
+                const searchInput = document.getElementById('addressSearch');
+                if (searchInput) {
+                    searchInput.addEventListener('keyup', function(event) {
+                        if (event.key === 'Enter') {
+                            searchAddress();
+                        }
+                    });
+                }
+            });
+        }
+        
+        // Apply address filter
+        function applyFilter() {
+            const filterValue = document.getElementById('addressFilter').value;
+            
+            if (filterValue) {
+                filteredData = allData.filter(row => 
+                    row.caller && row.caller === filterValue
+                );
+            } else {
+                filteredData = [...allData];
+            }
+            
+            currentPage = 1; // Reset to first page when filtering
+            renderTable(filteredData);
+            updateTotal(filteredData);
+            updateChart(filteredData);
+        }
+        
+        // Search for an address
+        function searchAddress() {
+            const searchValue = document.getElementById('addressSearch').value.toLowerCase().trim();
+            
+            if (searchValue) {
+                filteredData = allData.filter(row => 
+                    row.caller && row.caller.toLowerCase().includes(searchValue)
+                );
+                
+                // If only one exact match is found, select it in the dropdown
+                if (filteredData.length > 0) {
+                    const exactMatch = filteredData.find(row => 
+                        row.caller && row.caller.toLowerCase() === searchValue.toLowerCase()
+                    );
+                    
+                    if (exactMatch) {
+                        document.getElementById('addressFilter').value = exactMatch.caller;
+                    } else {
+                        document.getElementById('addressFilter').value = '';
+                    }
+                }
+            } else {
+                filteredData = [...allData];
+                document.getElementById('addressFilter').value = '';
+            }
+            
+            currentPage = 1; // Reset to first page when searching
+            renderTable(filteredData);
+            updateTotal(filteredData);
+            updateChart(filteredData);
+        }
+        
+        // Clear the filter
+        function clearFilter() {
+            document.getElementById('addressFilter').value = '';
+            document.getElementById('addressSearch').value = '';
+            filteredData = [...allData];
+            currentPage = 1; // Reset to first page when clearing filters
+            renderTable(filteredData);
+            updateTotal(filteredData);
+            updateChart(filteredData);
+        }
+        
+        // Create the exit rate chart
+        let exitRateChart;
+        function createExitRateChart(data) {
+            // Sort data by block number
+            const sortedData = [...data].sort((a, b) => parseInt(a.block) - parseInt(b.block));
+            
+            // Group data by day (approximately 8,640 blocks per day)
+            const BLOCKS_PER_DAY = 8640;
+            const dailyData = {};
+            
+            // Find the minimum day index to normalize to day 1
+            let minDayIndex = Number.MAX_SAFE_INTEGER;
+            sortedData.forEach(row => {
+                if (!row.block || !row.amountRaw) return;
+                const blockNum = parseInt(row.block);
+                const dayIndex = Math.floor(blockNum / BLOCKS_PER_DAY);
+                minDayIndex = Math.min(minDayIndex, dayIndex);
+            });
+            
+            sortedData.forEach(row => {
+                if (!row.block || !row.amountRaw) return;
+                
+                const blockNum = parseInt(row.block);
+                const rawDayIndex = Math.floor(blockNum / BLOCKS_PER_DAY);
+                // Normalize day index to start from 1
+                const normalizedDayIndex = rawDayIndex - minDayIndex + 1;
+                const dayLabel = `Day ${normalizedDayIndex}`;
+                
+                if (!dailyData[dayLabel]) {
+                    dailyData[dayLabel] = {
+                        totalAmount: ethers.BigNumber.from(0),
+                        blockStart: blockNum,
+                        blockEnd: blockNum
+                    };
+                }
+                
+                try {
+                    const amount = ethers.BigNumber.from(row.amountRaw);
+                    dailyData[dayLabel].totalAmount = dailyData[dayLabel].totalAmount.add(amount);
+                    dailyData[dayLabel].blockEnd = Math.max(dailyData[dayLabel].blockEnd, blockNum);
+                } catch (e) {
+                    console.error("Error parsing amount:", row.amountRaw);
+                }
+            });
+            
+            // Convert to arrays for Chart.js
+            const labels = Object.keys(dailyData).sort((a, b) => {
+                return parseInt(a.split(' ')[1]) - parseInt(b.split(' ')[1]);
+            });
+            
+            const amounts = labels.map(label => {
+                const amountInEther = parseFloat(ethers.utils.formatUnits(dailyData[label].totalAmount.toString(), 18));
+                return amountInEther;
+            });
+            
+            // Create cumulative data
+            let cumulativeTotal = 0;
+            const cumulativeAmounts = amounts.map(amount => {
+                cumulativeTotal += amount;
+                return cumulativeTotal;
+            });
+            
+            // Create the chart
+            const ctx = document.getElementById('exitRateChart').getContext('2d');
+            exitRateChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Daily DAI Exit Amount',
+                            data: amounts,
+                            backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                            borderColor: 'rgba(54, 162, 235, 1)',
+                            borderWidth: 1,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Cumulative DAI Exited',
+                            data: cumulativeAmounts,
+                            backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                            borderColor: 'rgba(255, 99, 132, 1)',
+                            borderWidth: 1,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    scales: {
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            title: {
+                                display: true,
+                                text: 'Daily Amount (DAI)'
+                            }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            title: {
+                                display: true,
+                                text: 'Cumulative Amount (DAI)'
+                            },
+                            grid: {
+                                drawOnChartArea: false
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    let label = context.dataset.label || '';
+                                    if (label) {
+                                        label += ': ';
+                                    }
+                                    if (context.parsed.y !== null) {
+                                        label += new Intl.NumberFormat('en-US', {
+                                            style: 'decimal',
+                                            minimumFractionDigits: 2,
+                                            maximumFractionDigits: 2
+                                        }).format(context.parsed.y);
+                                    }
+                                    return label;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Pagination functions
+        function nextPage() {
+            const totalPages = Math.ceil(filteredData.length / pageSize);
+            if (currentPage < totalPages) {
+                currentPage++;
+                renderTable(filteredData);
+            }
+        }
+        
+        function prevPage() {
+            if (currentPage > 1) {
+                currentPage--;
+                renderTable(filteredData);
+            }
+        }
+        
+        function changePageSize() {
+            pageSize = parseInt(document.getElementById('pageSize').value);
+            currentPage = 1; // Reset to first page when changing page size
+            renderTable(filteredData);
+        }
+        
+        // Update the chart based on filtered data
+        function updateChart(data) {
+            if (!exitRateChart) return;
+            
+            // Sort data by block number
+            const sortedData = [...data].sort((a, b) => parseInt(a.block) - parseInt(b.block));
+            
+            // Group data by day (approximately 8,640 blocks per day)
+            const BLOCKS_PER_DAY = 8640;
+            const dailyData = {};
+            
+            // Find the minimum day index to normalize to day 1
+            let minDayIndex = Number.MAX_SAFE_INTEGER;
+            sortedData.forEach(row => {
+                if (!row.block || !row.amountRaw) return;
+                const blockNum = parseInt(row.block);
+                const dayIndex = Math.floor(blockNum / BLOCKS_PER_DAY);
+                minDayIndex = Math.min(minDayIndex, dayIndex);
+            });
+            
+            sortedData.forEach(row => {
+                if (!row.block || !row.amountRaw) return;
+                
+                const blockNum = parseInt(row.block);
+                const rawDayIndex = Math.floor(blockNum / BLOCKS_PER_DAY);
+                // Normalize day index to start from 1
+                const normalizedDayIndex = rawDayIndex - minDayIndex + 1;
+                const dayLabel = `Day ${normalizedDayIndex}`;
+                
+                if (!dailyData[dayLabel]) {
+                    dailyData[dayLabel] = {
+                        totalAmount: ethers.BigNumber.from(0),
+                        blockStart: blockNum,
+                        blockEnd: blockNum
+                    };
+                }
+                
+                try {
+                    const amount = ethers.BigNumber.from(row.amountRaw);
+                    dailyData[dayLabel].totalAmount = dailyData[dayLabel].totalAmount.add(amount);
+                    dailyData[dayLabel].blockEnd = Math.max(dailyData[dayLabel].blockEnd, blockNum);
+                } catch (e) {
+                    console.error("Error parsing amount:", row.amountRaw);
+                }
+            });
+            
+            // Convert to arrays for Chart.js
+            const labels = Object.keys(dailyData).sort((a, b) => {
+                return parseInt(a.split(' ')[1]) - parseInt(b.split(' ')[1]);
+            });
+            
+            const amounts = labels.map(label => {
+                const amountInEther = parseFloat(ethers.utils.formatUnits(dailyData[label].totalAmount.toString(), 18));
+                return amountInEther;
+            });
+            
+            // Create cumulative data
+            let cumulativeTotal = 0;
+            const cumulativeAmounts = amounts.map(amount => {
+                cumulativeTotal += amount;
+                return cumulativeTotal;
+            });
+            
+            // Update chart data
+            exitRateChart.data.labels = labels;
+            exitRateChart.data.datasets[0].data = amounts;
+            exitRateChart.data.datasets[1].data = cumulativeAmounts;
+            exitRateChart.update();
+        }
+    </script>
+</body>
+</html>
